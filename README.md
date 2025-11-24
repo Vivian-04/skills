@@ -9,6 +9,7 @@ Claude skills are self-contained folders that package instructions, scripts, and
 - `hf_dataset_creator/` – prompts, templates, and scripts for creating structured training data sets. Includes reusable templates in `templates/`, sample prompts in `examples/`, and orchestration code in `scripts/dataset_manager.py`.
 - `hf_model_evaluation/` – instructions plus utilities for orchestrating evaluation jobs, generating reports, and mapping metrics. The `scripts/` folder hosts entry points such as `run_eval_job.py`, `evaluation_manager.py`, and supporting tools. Requirements live in `requirements.txt`.
 - `hf-llm-trainer/` – a comprehensive training skill with `SKILL.md` guidance, helper scripts (e.g., `train_sft_example.py`, `convert_to_gguf.py`, cost estimators), and deep reference docs under `references/`.
+- `hf-paper-publisher/` – tools for publishing and managing research papers on Hugging Face Hub. Index papers from arXiv, link papers to models/datasets, generate professional research articles from templates, and manage paper authorship. Includes paper templates (`standard`, `modern`, `arxiv`, `ml-report`) and citation generation utilities.
 - `pyproject.toml` defines minimal tooling metadata for the repository, and `LICENSE` covers usage.
 
 ## Install these skills in Claude Code
@@ -18,16 +19,17 @@ Claude skills are self-contained folders that package instructions, scripts, and
    /plugin marketplace add huggingface/skills
    ```
 2. In Claude Code, open **Browse and install plugins** → **huggingface-skills** (the marketplace you just added).
-3. Choose the folder you want (`hf-llm-trainer`, `hf_model_evaluation`, or `hf_dataset_creator`) and select **Install now**.
+3. Choose the folder you want (`hf-llm-trainer`, `hf_model_evaluation`, `hf_dataset_creator`, or `hf-paper-publisher`) and select **Install now**.
 4. Prefer commands? After registering the marketplace, run `/plugin install <skill-folder>@huggingface-skills` (for example, `/plugin install hf-llm-trainer@huggingface-skills`).
 
 ## Use an installed skill
 
 Once a skill is installed, mention it directly while giving Claude Code instructions:
 
-- “Use the HF LLM trainer skill to estimate the GPU memory needed for a 70B model run.”
-- “Use the HF model evaluation skill to launch `run_eval_job.py` on the latest checkpoint.”
-- “Use the HF dataset creator skill to draft new few-shot classification templates.”
+- "Use the HF LLM trainer skill to estimate the GPU memory needed for a 70B model run."
+- "Use the HF model evaluation skill to launch `run_eval_job.py` on the latest checkpoint."
+- "Use the HF dataset creator skill to draft new few-shot classification templates."
+- "Use the HF paper publisher skill to index my arXiv paper and link it to my model."
 
 Claude automatically loads the corresponding `SKILL.md` instructions and helper scripts while it completes the task.
 
