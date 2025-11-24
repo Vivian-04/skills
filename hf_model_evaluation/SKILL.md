@@ -28,7 +28,8 @@ This skill provides tools to add structured evaluation results to Hugging Face m
 ## 1. Extract Evaluation Tables from README
 - **Parse Markdown Tables**: Automatically detect and parse evaluation tables in model READMEs
 - **Multiple Table Support**: Handle models with multiple benchmark tables
-- **Format Detection**: Recognize common evaluation table formats (benchmarks as rows or columns)
+- **Format Detection**: Recognize common evaluation table formats (benchmarks as rows/columns, or transposed with models as rows)
+- **Smart Model Matching**: Find and extract scores for specific models in comparison tables
 - **Smart Conversion**: Convert parsed tables to model-index YAML format
 
 ## 2. Import from Artificial Analysis
@@ -107,6 +108,95 @@ python scripts/evaluation_manager.py extract-readme \
 | Benchmark | Accuracy | F1 Score |
 |-----------|----------|----------|
 | MMLU      | 85.2     | 0.84     |
+```
+
+**Format 4: Transposed Tables (Models as Rows)**
+```markdown
+| Model          | MMLU | HumanEval | GSM8K | ARC  |
+|----------------|------|-----------|-------|------|
+| GPT-4          | 86.4 | 67.0      | 92.0  | 96.3 |
+| Claude-3       | 86.8 | 84.9      | 95.0  | 96.4 |
+| **Your-Model** | 85.2 | 72.5      | 91.3  | 95.8 |
+```
+
+In this format, the script will:
+- Detect that models are in rows (first column) and benchmarks in columns (header)
+- Find the row matching your model name (handles bold/markdown formatting)
+- Extract all benchmark scores from that specific row only
+
+#### Validating Extraction Results
+
+**CRITICAL**: Always validate extracted results before creating a PR or pushing changes.
+
+After running `extract-readme`, you MUST:
+
+1. **Use `--dry-run` first** to preview the extraction:
+```bash
+python scripts/evaluation_manager.py extract-readme \
+  --repo-id "username/model-name" \
+  --dry-run
+```
+
+2. **Manually verify the output**:
+   - Check that the correct model's scores were extracted (not other models)
+   - Verify benchmark names are correct
+   - Confirm all expected benchmarks are present
+   - Ensure numeric values match the README exactly
+
+3. **For transposed tables** (models as rows):
+   - Verify only ONE model's row was extracted
+   - Check that it matched the correct model name
+   - Look for warnings like "Could not find model 'X' in transposed table"
+   - If scores from multiple models appear, the table format was misdetected
+
+4. **Compare against the source**:
+   - Open the model README in a browser
+   - Cross-reference each extracted score with the table
+   - Verify no scores are mixed from different rows/columns
+
+5. **Common validation failures**:
+   - **Multiple models extracted**: Wrong table format detected
+   - **Missing benchmarks**: Column headers not recognized
+   - **Wrong scores**: Matched wrong model row or column
+   - **Empty metrics list**: Table not detected or parsing failed
+
+**Example validation workflow**:
+```bash
+# Step 1: Dry run to preview
+python scripts/evaluation_manager.py extract-readme \
+  --repo-id "allenai/Olmo-3-1125-32B" \
+  --dry-run
+
+# Step 2: If model name not found in table, script shows available models
+# ⚠ Could not find model 'Olmo-3-1125-32B' in transposed table
+#
+# Available models in table:
+#   1. **Open-weight Models**
+#   2. Qwen-2.5-32B
+#   ...
+#   12. **Olmo 3-32B**
+#
+# Please select the correct model name from the list above.
+
+# Step 3: Re-run with the correct model name
+python scripts/evaluation_manager.py extract-readme \
+  --repo-id "allenai/Olmo-3-1125-32B" \
+  --model-name-override "**Olmo 3-32B**" \
+  --dry-run
+
+# Step 4: Review the YAML output carefully
+# Verify: Are these all benchmarks for Olmo-3-32B ONLY?
+# Verify: Do the scores match the README table?
+
+# Step 5: If validation passes, create PR
+python scripts/evaluation_manager.py extract-readme \
+  --repo-id "allenai/Olmo-3-1125-32B" \
+  --model-name-override "**Olmo 3-32B**" \
+  --create-pr
+
+# Step 6: Validate the model card after update
+python scripts/evaluation_manager.py show \
+  --repo-id "allenai/Olmo-3-1125-32B"
 ```
 
 ### Method 2: Import from Artificial Analysis
@@ -188,9 +278,15 @@ python scripts/evaluation_manager.py extract-readme \
   --repo-id "username/model-name" \
   [--task-type "text-generation"] \
   [--dataset-name "Custom Benchmarks"] \
+  [--model-name-override "Model Name From Table"] \
   [--dry-run] \
   [--create-pr]
 ```
+
+The `--model-name-override` flag is useful when:
+- The model name in the table differs from the repo name
+- Working with transposed tables where models are listed with different formatting
+- The script cannot automatically match the model name
 
 **Import from Artificial Analysis:**
 ```bash
@@ -256,6 +352,8 @@ model-index:
           url: https://source-url.com
 ```
 
+WARNING: Do not use markdown formatting in the model name. Use the exact name from the table. Only use urls in the source.url field.
+
 ### Advanced Usage
 
 **Extract Multiple Tables:**
@@ -301,22 +399,33 @@ done < models.txt
 
 ### Best Practices
 
-1. **Use Dry Run First**: Always preview changes with `--dry-run` before committing
-2. **Validate After Updates**: Run `validate` command to ensure proper formatting
-3. **Source Attribution**: Include source information for traceability
-4. **Regular Updates**: Keep evaluation scores current as new benchmarks emerge
-5. **Create PRs for Others**: Use `--create-pr` when updating models you don't own
-6. **Monitor Costs**: Evaluation Jobs are billed by usage. Ensure you check running jobs and costs.
-7. **One model per repo**: Only add one model's 'results' to the model-index. The main model of the repo. No derivatives or forks!
+1. **ALWAYS Validate Extraction**: Use `--dry-run` first and manually verify all extracted scores match the README exactly before pushing
+2. **Check for Transposed Tables**: If the README has comparison tables with multiple models, verify only YOUR model's scores were extracted
+3. **Validate After Updates**: Run `validate` and `show` commands to ensure proper formatting
+4. **Source Attribution**: Include source information for traceability
+5. **Regular Updates**: Keep evaluation scores current as new benchmarks emerge
+6. **Create PRs for Others**: Use `--create-pr` when updating models you don't own
+7. **Monitor Costs**: Evaluation Jobs are billed by usage. Ensure you check running jobs and costs
+8. **One model per repo**: Only add one model's 'results' to the model-index. The main model of the repo. No derivatives or forks!
+9. **Markdown formatting**: Never use markdown formatting in the model name. Use the exact name from the table. Only use urls in the source.url field.
 
-### Column Matching
+### Model Name Matching
 
-When extracting evaluation tables with multiple model columns, the script uses **exact normalized token matching**:
+When extracting evaluation tables with multiple models (either as columns or rows), the script uses **exact normalized token matching**:
 
-- Normalizes both repo name and column names (lowercase, replace `-` and `_` with spaces)
-- Compares token sets: `"OLMo-3-32B-Think"` → `{"olmo", "3", "32b", "think"}` matches `"Olmo 3 Think 32B"`
+- Removes markdown formatting (bold `**`, links `[]()`  )
+- Normalizes names (lowercase, replace `-` and `_` with spaces)
+- Compares token sets: `"OLMo-3-32B"` → `{"olmo", "3", "32b"}` matches `"**Olmo 3 32B**"` or `"[Olmo-3-32B](...)`
 - Only extracts if tokens match exactly (handles different word orders and separators)
-- Fails if no exact match found (rather than guessing from similar columns)
+- Fails if no exact match found (rather than guessing from similar names)
+
+**For column-based tables** (benchmarks as rows, models as columns):
+- Finds the column header matching the model name
+- Extracts scores from that column only
+
+**For transposed tables** (models as rows, benchmarks as columns):
+- Finds the row in the first column matching the model name
+- Extracts all benchmark scores from that row only
 
 This ensures only the correct model's scores are extracted, never unrelated models or training checkpoints. 
 
@@ -352,6 +461,10 @@ python scripts/evaluation_manager.py import-aa \
 
 **Issue**: "No evaluation tables found in README"
 - **Solution**: Check if README contains markdown tables with numeric scores
+
+**Issue**: "Could not find model 'X' in transposed table"
+- **Solution**: The script will display available models. Use `--model-name-override` with the exact name from the list
+- **Example**: `--model-name-override "**Olmo 3-32B**"`
 
 **Issue**: "AA_API_KEY not set"
 - **Solution**: Set environment variable or add to .env file

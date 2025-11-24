@@ -106,6 +106,28 @@ def is_evaluation_table(header: List[str], rows: List[List[str]]) -> bool:
     return has_benchmark_header or has_numeric_values
 
 
+def normalize_model_name(name: str) -> tuple[set[str], str]:
+    """
+    Normalize a model name for matching.
+
+    Args:
+        name: Model name to normalize
+
+    Returns:
+        Tuple of (token_set, normalized_string)
+    """
+    # Remove markdown formatting
+    cleaned = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', name)  # Remove markdown links
+    cleaned = re.sub(r'\*\*([^\*]+)\*\*', r'\1', cleaned)  # Remove bold
+    cleaned = cleaned.strip()
+
+    # Normalize and tokenize
+    normalized = cleaned.lower().replace("-", " ").replace("_", " ")
+    tokens = set(normalized.split())
+
+    return tokens, normalized
+
+
 def find_main_model_column(header: List[str], model_name: str) -> Optional[int]:
     """
     Identify the column index that corresponds to the main model.
@@ -124,8 +146,7 @@ def find_main_model_column(header: List[str], model_name: str) -> Optional[int]:
         return None
 
     # Normalize model name and extract tokens
-    normalized_model = model_name.lower().replace("-", " ").replace("_", " ")
-    model_tokens = set(normalized_model.split())
+    model_tokens, _ = normalize_model_name(model_name)
 
     # Find exact matches only
     for i, col_name in enumerate(header):
@@ -136,8 +157,7 @@ def find_main_model_column(header: List[str], model_name: str) -> Optional[int]:
         if i == 0:
             continue
 
-        normalized_col = col_name.lower().replace("-", " ").replace("_", " ")
-        col_tokens = set(normalized_col.split())
+        col_tokens, _ = normalize_model_name(col_name)
 
         # Check for exact token match
         if model_tokens == col_tokens:
@@ -145,6 +165,110 @@ def find_main_model_column(header: List[str], model_name: str) -> Optional[int]:
 
     # No exact match found
     return None
+
+
+def find_main_model_row(
+    rows: List[List[str]], model_name: str
+) -> tuple[Optional[int], List[str]]:
+    """
+    Identify the row index that corresponds to the main model in a transposed table.
+
+    In transposed tables, each row represents a different model, with the first
+    column containing the model name.
+
+    Args:
+        rows: Table data rows
+        model_name: Model name from repo_id (e.g., "OLMo-3-32B")
+
+    Returns:
+        Tuple of (row_index, available_models)
+        - row_index: Index of the main model, or None if no exact match found
+        - available_models: List of all model names found in the table
+    """
+    if not rows or not model_name:
+        return None, []
+
+    model_tokens, _ = normalize_model_name(model_name)
+    available_models = []
+
+    for i, row in enumerate(rows):
+        if not row or not row[0]:
+            continue
+
+        row_name = row[0].strip()
+
+        # Skip separator/header rows
+        if not row_name or row_name.startswith('---'):
+            continue
+
+        row_tokens, _ = normalize_model_name(row_name)
+
+        # Collect all non-empty model names
+        if row_tokens:
+            available_models.append(row_name)
+
+        # Check for exact token match
+        if model_tokens == row_tokens:
+            return i, available_models
+
+    return None, available_models
+
+
+def is_transposed_table(header: List[str], rows: List[List[str]]) -> bool:
+    """
+    Determine if a table is transposed (models as rows, benchmarks as columns).
+
+    A table is considered transposed if:
+    - The first column contains model-like names (not benchmark names)
+    - Most other columns contain numeric values
+    - Header row contains benchmark-like names
+
+    Args:
+        header: Table column headers
+        rows: Table data rows
+
+    Returns:
+        True if table appears to be transposed, False otherwise
+    """
+    if not header or not rows or len(header) < 3:
+        return False
+
+    # Check if first column header suggests model names
+    first_col = header[0].lower()
+    model_indicators = ["model", "system", "llm", "name"]
+    has_model_header = any(indicator in first_col for indicator in model_indicators)
+
+    # Check if remaining headers look like benchmarks
+    benchmark_keywords = [
+        "mmlu", "humaneval", "gsm", "hellaswag", "arc", "winogrande",
+        "eval", "score", "benchmark", "test", "math", "code", "mbpp",
+        "truthfulqa", "boolq", "piqa", "siqa", "drop", "squad"
+    ]
+
+    benchmark_header_count = 0
+    for col_name in header[1:]:
+        col_lower = col_name.lower()
+        if any(keyword in col_lower for keyword in benchmark_keywords):
+            benchmark_header_count += 1
+
+    has_benchmark_headers = benchmark_header_count >= 2
+
+    # Check if data rows have numeric values in most columns (except first)
+    numeric_count = 0
+    total_cells = 0
+
+    for row in rows[:5]:  # Check first 5 rows
+        for cell in row[1:]:  # Skip first column
+            total_cells += 1
+            try:
+                float(cell.replace("%", "").replace(",", "").strip())
+                numeric_count += 1
+            except (ValueError, AttributeError):
+                continue
+
+    has_numeric_data = total_cells > 0 and (numeric_count / total_cells) > 0.5
+
+    return (has_model_header or has_benchmark_headers) and has_numeric_data
 
 
 def extract_metrics_from_table(
@@ -159,8 +283,9 @@ def extract_metrics_from_table(
     Args:
         header: Table column headers
         rows: Table data rows
-        table_format: "rows" (benchmarks as rows), "columns" (benchmarks as columns), or "auto"
-        model_name: Optional model name to identify the correct column (for tables with multiple models)
+        table_format: "rows" (benchmarks as rows), "columns" (benchmarks as columns),
+                     "transposed" (models as rows, benchmarks as columns), or "auto"
+        model_name: Optional model name to identify the correct column/row
 
     Returns:
         List of metric dictionaries with name, type, and value
@@ -168,15 +293,19 @@ def extract_metrics_from_table(
     metrics = []
 
     if table_format == "auto":
-        # Heuristic: if first row has mostly numeric values, benchmarks are columns
-        try:
-            numeric_count = sum(
-                1 for cell in rows[0] if cell and
-                re.match(r"^\d+\.?\d*%?$", cell.replace(",", "").strip())
-            )
-            table_format = "columns" if numeric_count > len(rows[0]) / 2 else "rows"
-        except (IndexError, ValueError):
-            table_format = "rows"
+        # First check if it's a transposed table (models as rows)
+        if is_transposed_table(header, rows):
+            table_format = "transposed"
+        else:
+            # Heuristic: if first row has mostly numeric values, benchmarks are columns
+            try:
+                numeric_count = sum(
+                    1 for cell in rows[0] if cell and
+                    re.match(r"^\d+\.?\d*%?$", cell.replace(",", "").strip())
+                )
+                table_format = "columns" if numeric_count > len(rows[0]) / 2 else "rows"
+            except (IndexError, ValueError):
+                table_format = "rows"
 
     if table_format == "rows":
         # Benchmarks are in rows, scores in columns
@@ -231,6 +360,49 @@ def extract_metrics_from_table(
                     except (ValueError, IndexError):
                         continue
 
+    elif table_format == "transposed":
+        # Models are in rows (first column), benchmarks are in columns (header)
+        # Find the row that matches the target model
+        if not model_name:
+            print("Warning: model_name required for transposed table format")
+            return metrics
+
+        target_row_idx, available_models = find_main_model_row(rows, model_name)
+
+        if target_row_idx is None:
+            print(f"\n⚠ Could not find model '{model_name}' in transposed table")
+            if available_models:
+                print("\nAvailable models in table:")
+                for i, model in enumerate(available_models, 1):
+                    print(f"  {i}. {model}")
+                print("\nPlease select the correct model name from the list above.")
+                print("You can specify it using the --model-name-override flag:")
+                print(f'  --model-name-override "{available_models[0]}"')
+            return metrics
+
+        target_row = rows[target_row_idx]
+
+        # Extract metrics from each column (skip first column which is model name)
+        for i in range(1, len(header)):
+            benchmark_name = header[i].strip()
+            if not benchmark_name or i >= len(target_row):
+                continue
+
+            try:
+                value_str = target_row[i].replace("%", "").replace(",", "").strip()
+                if not value_str:
+                    continue
+
+                value = float(value_str)
+
+                metrics.append({
+                    "name": benchmark_name,
+                    "type": benchmark_name.lower().replace(" ", "_").replace("-", "_"),
+                    "value": value
+                })
+            except (ValueError, AttributeError):
+                continue
+
     else:  # table_format == "columns"
         # Benchmarks are in columns
         if not rows:
@@ -265,7 +437,8 @@ def extract_evaluations_from_readme(
     repo_id: str,
     task_type: str = "text-generation",
     dataset_name: str = "Benchmarks",
-    dataset_type: str = "benchmark"
+    dataset_type: str = "benchmark",
+    model_name_override: Optional[str] = None
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Extract evaluation results from a model's README.
@@ -275,6 +448,7 @@ def extract_evaluations_from_readme(
         task_type: Task type for model-index (e.g., "text-generation")
         dataset_name: Name for the benchmark dataset
         dataset_type: Type identifier for the dataset
+        model_name_override: Override model name for matching (useful for transposed tables)
 
     Returns:
         Model-index formatted results or None if no evaluations found
@@ -287,8 +461,12 @@ def extract_evaluations_from_readme(
             print(f"No README content found for {repo_id}")
             return None
 
-        # Extract model name from repo_id
-        model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
+        # Extract model name from repo_id or use override
+        if model_name_override:
+            model_name = model_name_override
+            print(f"Using model name override: '{model_name}'")
+        else:
+            model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
 
         # Extract all tables
         tables = extract_tables_from_markdown(readme_content)
@@ -641,6 +819,7 @@ def main():
     extract_parser.add_argument("--task-type", type=str, default="text-generation", help="Task type")
     extract_parser.add_argument("--dataset-name", type=str, default="Benchmarks", help="Dataset name")
     extract_parser.add_argument("--dataset-type", type=str, default="benchmark", help="Dataset type")
+    extract_parser.add_argument("--model-name-override", type=str, help="Override model name for table matching")
     extract_parser.add_argument("--create-pr", action="store_true", help="Create PR instead of direct push")
     extract_parser.add_argument("--dry-run", action="store_true", help="Preview without updating")
 
@@ -680,7 +859,8 @@ def main():
             repo_id=args.repo_id,
             task_type=args.task_type,
             dataset_name=args.dataset_name,
-            dataset_type=args.dataset_type
+            dataset_type=args.dataset_type,
+            model_name_override=args.model_name_override
         )
 
         if not results:
