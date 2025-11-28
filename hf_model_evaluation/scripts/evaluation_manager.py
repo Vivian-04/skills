@@ -2,6 +2,7 @@
 # requires-python = ">=3.13"
 # dependencies = [
 #     "huggingface-hub>=1.1.4",
+#     "markdown-it-py>=3.0.0",
 #     "python-dotenv>=1.2.1",
 #     "pyyaml>=6.0.3",
 #     "requests>=2.32.5",
@@ -27,6 +28,7 @@ import dotenv
 import requests
 import yaml
 from huggingface_hub import ModelCard
+from markdown_it import MarkdownIt
 
 dotenv.load_dotenv()
 
@@ -297,15 +299,22 @@ def extract_metrics_from_table(
         if is_transposed_table(header, rows):
             table_format = "transposed"
         else:
-            # Heuristic: if first row has mostly numeric values, benchmarks are columns
-            try:
-                numeric_count = sum(
-                    1 for cell in rows[0] if cell and
-                    re.match(r"^\d+\.?\d*%?$", cell.replace(",", "").strip())
-                )
-                table_format = "columns" if numeric_count > len(rows[0]) / 2 else "rows"
-            except (IndexError, ValueError):
+            # Check if first column header is empty/generic (indicates benchmarks in rows)
+            first_header = header[0].lower().strip() if header else ""
+            is_first_col_benchmarks = not first_header or first_header in ["", "benchmark", "task", "dataset", "metric", "eval"]
+
+            if is_first_col_benchmarks:
                 table_format = "rows"
+            else:
+                # Heuristic: if first row has mostly numeric values, benchmarks are columns
+                try:
+                    numeric_count = sum(
+                        1 for cell in rows[0] if cell and
+                        re.match(r"^\d+\.?\d*%?$", cell.replace(",", "").strip())
+                    )
+                    table_format = "columns" if numeric_count > len(rows[0]) / 2 else "rows"
+                except (IndexError, ValueError):
+                    table_format = "rows"
 
     if table_format == "rows":
         # Benchmarks are in rows, scores in columns
@@ -438,7 +447,8 @@ def extract_evaluations_from_readme(
     task_type: str = "text-generation",
     dataset_name: str = "Benchmarks",
     dataset_type: str = "benchmark",
-    model_name_override: Optional[str] = None
+    model_name_override: Optional[str] = None,
+    table_index: Optional[int] = None
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Extract evaluation results from a model's README.
@@ -448,7 +458,8 @@ def extract_evaluations_from_readme(
         task_type: Task type for model-index (e.g., "text-generation")
         dataset_name: Name for the benchmark dataset
         dataset_type: Type identifier for the dataset
-        model_name_override: Override model name for matching (useful for transposed tables)
+        model_name_override: Override model name for matching (column header for comparison tables)
+        table_index: 1-indexed table number from inspect-tables output
 
     Returns:
         Model-index formatted results or None if no evaluations found
@@ -468,28 +479,54 @@ def extract_evaluations_from_readme(
         else:
             model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
 
-        # Extract all tables
-        tables = extract_tables_from_markdown(readme_content)
+        # Use markdown-it parser for accurate table extraction
+        all_tables = extract_tables_with_parser(readme_content)
 
-        if not tables:
+        if not all_tables:
             print(f"No tables found in README for {repo_id}")
             return None
 
-        # Parse and filter evaluation tables
-        all_metrics = []
-        for table_str in tables:
-            header, rows = parse_markdown_table(table_str)
+        # If table_index specified, use that specific table
+        if table_index is not None:
+            if table_index < 1 or table_index > len(all_tables):
+                print(f"Invalid table index {table_index}. Found {len(all_tables)} tables.")
+                print("Run inspect-tables to see available tables.")
+                return None
+            tables_to_process = [all_tables[table_index - 1]]
+        else:
+            # Filter to evaluation tables only
+            eval_tables = []
+            for table in all_tables:
+                header = table.get("headers", [])
+                rows = table.get("rows", [])
+                if is_evaluation_table(header, rows):
+                    eval_tables.append(table)
 
-            if is_evaluation_table(header, rows):
-                metrics = extract_metrics_from_table(header, rows, model_name=model_name)
-                all_metrics.extend(metrics)
+            if len(eval_tables) > 1:
+                print(f"\n⚠ Found {len(eval_tables)} evaluation tables.")
+                print("Run inspect-tables first, then use --table to select one:")
+                print(f'  python scripts/evaluation_manager.py inspect-tables --repo-id "{repo_id}"')
+                return None
+            elif len(eval_tables) == 0:
+                print(f"No evaluation tables found in README for {repo_id}")
+                return None
+
+            tables_to_process = eval_tables
+
+        # Extract metrics from selected table(s)
+        all_metrics = []
+        for table in tables_to_process:
+            header = table.get("headers", [])
+            rows = table.get("rows", [])
+            metrics = extract_metrics_from_table(header, rows, model_name=model_name)
+            all_metrics.extend(metrics)
 
         if not all_metrics:
-            print(f"No evaluation tables found in README for {repo_id}")
+            print(f"No metrics extracted from table")
             return None
 
         # Build model-index structure
-        model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
+        display_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
 
         results = [{
             "task": {"type": task_type},
@@ -509,6 +546,211 @@ def extract_evaluations_from_readme(
     except Exception as e:
         print(f"Error extracting evaluations from README: {e}")
         return None
+
+
+# ============================================================================
+# Table Inspection (using markdown-it-py for accurate parsing)
+# ============================================================================
+
+
+def extract_tables_with_parser(markdown_content: str) -> List[Dict[str, Any]]:
+    """
+    Extract tables from markdown using markdown-it-py parser.
+    Uses GFM (GitHub Flavored Markdown) which includes table support.
+    """
+    md = MarkdownIt("gfm-like")
+    tokens = md.parse(markdown_content)
+
+    tables = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        if token.type == "table_open":
+            table_data = {"headers": [], "rows": []}
+            current_row = []
+            in_header = False
+
+            i += 1
+            while i < len(tokens) and tokens[i].type != "table_close":
+                t = tokens[i]
+                if t.type == "thead_open":
+                    in_header = True
+                elif t.type == "thead_close":
+                    in_header = False
+                elif t.type == "tr_open":
+                    current_row = []
+                elif t.type == "tr_close":
+                    if in_header:
+                        table_data["headers"] = current_row
+                    else:
+                        table_data["rows"].append(current_row)
+                    current_row = []
+                elif t.type == "inline":
+                    current_row.append(t.content.strip())
+                i += 1
+
+            if table_data["headers"] or table_data["rows"]:
+                tables.append(table_data)
+
+        i += 1
+
+    return tables
+
+
+def detect_table_format(table: Dict[str, Any], repo_id: str) -> Dict[str, Any]:
+    """Analyze a table to detect its format and identify model columns."""
+    headers = table.get("headers", [])
+    rows = table.get("rows", [])
+
+    if not headers or not rows:
+        return {"format": "unknown", "columns": headers, "model_columns": [], "row_count": 0, "sample_rows": []}
+
+    first_header = headers[0].lower() if headers else ""
+    is_first_col_benchmarks = not first_header or first_header in ["", "benchmark", "task", "dataset", "metric", "eval"]
+
+    # Check for numeric columns
+    numeric_columns = []
+    for col_idx in range(1, len(headers)):
+        numeric_count = 0
+        for row in rows[:5]:
+            if col_idx < len(row):
+                try:
+                    val = re.sub(r'\s*\([^)]*\)', '', row[col_idx])
+                    float(val.replace("%", "").replace(",", "").strip())
+                    numeric_count += 1
+                except (ValueError, AttributeError):
+                    pass
+        if numeric_count > len(rows[:5]) / 2:
+            numeric_columns.append(col_idx)
+
+    # Determine format
+    if is_first_col_benchmarks and len(numeric_columns) > 1:
+        format_type = "comparison"
+    elif is_first_col_benchmarks and len(numeric_columns) == 1:
+        format_type = "simple"
+    elif len(numeric_columns) > len(headers) / 2:
+        format_type = "transposed"
+    else:
+        format_type = "unknown"
+
+    # Find model columns
+    model_columns = []
+    model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
+    model_tokens, _ = normalize_model_name(model_name)
+
+    for idx, header in enumerate(headers):
+        if idx == 0 and is_first_col_benchmarks:
+            continue
+        if header:
+            header_tokens, _ = normalize_model_name(header)
+            is_match = model_tokens == header_tokens
+            is_partial = model_tokens.issubset(header_tokens) or header_tokens.issubset(model_tokens)
+            model_columns.append({
+                "index": idx,
+                "header": header,
+                "is_exact_match": is_match,
+                "is_partial_match": is_partial and not is_match
+            })
+
+    return {
+        "format": format_type,
+        "columns": headers,
+        "model_columns": model_columns,
+        "row_count": len(rows),
+        "sample_rows": [row[0] for row in rows[:5] if row]
+    }
+
+
+def inspect_tables(repo_id: str) -> None:
+    """Inspect and display all evaluation tables in a model's README."""
+    try:
+        card = ModelCard.load(repo_id, token=HF_TOKEN)
+        readme_content = card.content
+
+        if not readme_content:
+            print(f"No README content found for {repo_id}")
+            return
+
+        tables = extract_tables_with_parser(readme_content)
+
+        if not tables:
+            print(f"No tables found in README for {repo_id}")
+            return
+
+        print(f"\n{'='*70}")
+        print(f"Tables found in README for: {repo_id}")
+        print(f"{'='*70}")
+
+        eval_table_count = 0
+        for table in tables:
+            analysis = detect_table_format(table, repo_id)
+
+            if analysis["format"] == "unknown" and not analysis.get("sample_rows"):
+                continue
+
+            eval_table_count += 1
+            print(f"\n## Table {eval_table_count}")
+            print(f"   Format: {analysis['format']}")
+            print(f"   Rows: {analysis['row_count']}")
+
+            print(f"\n   Columns ({len(analysis['columns'])}):")
+            for col_info in analysis.get("model_columns", []):
+                idx = col_info["index"]
+                header = col_info["header"]
+                if col_info["is_exact_match"]:
+                    print(f"      [{idx}] {header}  ✓ EXACT MATCH")
+                elif col_info["is_partial_match"]:
+                    print(f"      [{idx}] {header}  ~ partial match")
+                else:
+                    print(f"      [{idx}] {header}")
+
+            if analysis.get("sample_rows"):
+                print(f"\n   Sample rows (first column):")
+                for row_val in analysis["sample_rows"][:5]:
+                    print(f"      - {row_val}")
+
+            # Build suggested command
+            cmd_parts = [
+                "python scripts/evaluation_manager.py extract-readme",
+                f'--repo-id "{repo_id}"',
+                f"--table {eval_table_count}"
+            ]
+
+            override_value = None
+            if analysis["format"] == "comparison":
+                exact = next((c for c in analysis.get("model_columns", []) if c["is_exact_match"]), None)
+                if exact:
+                    print(f"\n   ✓ Column match: {exact['header']}")
+                else:
+                    partial = next((c for c in analysis.get("model_columns", []) if c["is_partial_match"]), None)
+                    if partial:
+                        override_value = partial["header"]
+                        print(f"\n   ⚠ No exact match. Best candidate: {partial['header']}")
+                    elif analysis.get("model_columns"):
+                        print(f"\n   ⚠ Could not identify model column. Options:")
+                        for col_info in analysis.get("model_columns", []):
+                            print(f'      "{col_info["header"]}"')
+                        override_value = analysis["model_columns"][0]["header"]
+
+            if override_value:
+                cmd_parts.append(f'--model-name-override "{override_value}"')
+
+            cmd_parts.append("--dry-run")
+
+            print(f"\n   Suggested command:")
+            print(f"      {cmd_parts[0]} \\")
+            for part in cmd_parts[1:-1]:
+                print(f"        {part} \\")
+            print(f"        {cmd_parts[-1]}")
+
+        if eval_table_count == 0:
+            print("\nNo evaluation tables detected.")
+
+        print(f"\n{'='*70}\n")
+
+    except Exception as e:
+        print(f"Error inspecting tables: {e}")
 
 
 # ============================================================================
@@ -816,12 +1058,13 @@ def main():
         help="Extract evaluation tables from model README"
     )
     extract_parser.add_argument("--repo-id", type=str, required=True, help="HF repository ID")
+    extract_parser.add_argument("--table", type=int, help="Table number (1-indexed, from inspect-tables output)")
+    extract_parser.add_argument("--model-name-override", type=str, help="Column header for comparison tables")
     extract_parser.add_argument("--task-type", type=str, default="text-generation", help="Task type")
     extract_parser.add_argument("--dataset-name", type=str, default="Benchmarks", help="Dataset name")
     extract_parser.add_argument("--dataset-type", type=str, default="benchmark", help="Dataset type")
-    extract_parser.add_argument("--model-name-override", type=str, help="Override model name for table matching")
     extract_parser.add_argument("--create-pr", action="store_true", help="Create PR instead of direct push")
-    extract_parser.add_argument("--dry-run", action="store_true", help="Preview without updating")
+    extract_parser.add_argument("--dry-run", action="store_true", help="Preview YAML without updating")
 
     # Import from AA command
     aa_parser = subparsers.add_parser(
@@ -847,6 +1090,21 @@ def main():
     )
     validate_parser.add_argument("--repo-id", type=str, required=True, help="HF repository ID")
 
+    # Inspect tables command
+    inspect_parser = subparsers.add_parser(
+        "inspect-tables",
+        help="Inspect tables in README → outputs suggested extract-readme command",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Workflow:
+  1. inspect-tables     → see table structure and columns
+  2. copy command       → suggested extract-readme command
+  3. run with --dry-run → preview YAML output
+  4. remove --dry-run   → apply changes
+"""
+    )
+    inspect_parser.add_argument("--repo-id", type=str, required=True, help="HF repository ID")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -860,7 +1118,8 @@ def main():
             task_type=args.task_type,
             dataset_name=args.dataset_name,
             dataset_type=args.dataset_type,
-            model_name_override=args.model_name_override
+            model_name_override=args.model_name_override,
+            table_index=args.table
         )
 
         if not results:
@@ -901,6 +1160,9 @@ def main():
 
     elif args.command == "validate":
         validate_model_index(args.repo_id)
+
+    elif args.command == "inspect-tables":
+        inspect_tables(args.repo_id)
 
 
 if __name__ == "__main__":

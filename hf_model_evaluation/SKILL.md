@@ -17,20 +17,33 @@ This skill provides tools to add structured evaluation results to Hugging Face m
 
 # Dependencies
 - huggingface_hub>=0.26.0
+- markdown-it-py>=3.0.0
 - python-dotenv>=1.2.1
 - pyyaml>=6.0.3
 - requests>=2.32.5
 - inspect-ai>=0.3.0
 - re (built-in)
 
+# IMPORTANT: Using This Skill
+
+**Always run `--help` to get guidance on table extraction and YAML generation:**
+```bash
+python scripts/evaluation_manager.py --help
+python scripts/evaluation_manager.py inspect-tables --help
+python scripts/evaluation_manager.py extract-readme --help
+```
+
+The `--help` output includes workflow guidance for converting tables to YAML.
+
 # Core Capabilities
 
-## 1. Extract Evaluation Tables from README
-- **Parse Markdown Tables**: Automatically detect and parse evaluation tables in model READMEs
-- **Multiple Table Support**: Handle models with multiple benchmark tables
-- **Format Detection**: Recognize common evaluation table formats (benchmarks as rows/columns, or transposed with models as rows)
-- **Smart Model Matching**: Find and extract scores for specific models in comparison tables
-- **Smart Conversion**: Convert parsed tables to model-index YAML format
+## 1. Inspect and Extract Evaluation Tables from README
+- **Inspect Tables**: Use `inspect-tables` to see all tables in a README with their structure, columns, and suggested extraction commands
+- **Parse Markdown Tables**: Accurate parsing using markdown-it-py (ignores code blocks and examples)
+- **Table Selection**: Use `--table N` to extract from a specific table (required when multiple tables exist)
+- **Format Detection**: Recognize common formats (benchmarks as rows, columns, or comparison tables with multiple models)
+- **Column Matching**: Automatically identify model columns, with `--model-name-override` for comparison tables
+- **YAML Generation**: Convert selected table to model-index YAML format
 
 ## 2. Import from Artificial Analysis
 - **API Integration**: Fetch benchmark scores directly from Artificial Analysis
@@ -63,28 +76,71 @@ The skill includes Python scripts in `scripts/` to perform operations.
 
 ### Method 1: Extract from README
 
-Extract evaluation tables from a model's existing README and add them to model-index metadata.
+Extract evaluation tables from a model's existing README and convert to model-index YAML.
 
-**Basic Usage:**
+#### Recommended Workflow: Inspect Tables First
+
+**Step 1: Inspect the tables** to see structure and get the extraction command:
 ```bash
-python scripts/evaluation_manager.py extract-readme \
-  --repo-id "username/model-name"
+python scripts/evaluation_manager.py inspect-tables --repo-id "allenai/OLMo-7B"
 ```
 
-**With Custom Task Type:**
-```bash
-python scripts/evaluation_manager.py extract-readme \
-  --repo-id "username/model-name" \
-  --task-type "text-generation" \
-  --dataset-name "Custom Benchmarks"
+This outputs:
+```
+======================================================================
+Tables found in README for: allenai/OLMo-7B
+======================================================================
+
+## Table 3
+   Format: comparison
+   Rows: 14
+
+   Columns (6):
+      [1] [Llama 7B](...)
+      [2] [Llama 2 7B](...)
+      [5] **OLMo 7B** (ours)  ~ partial match
+
+   Sample rows (first column):
+      - arc_challenge
+      - arc_easy
+      - boolq
+
+   ⚠ No exact match. Best candidate: **OLMo 7B** (ours)
+
+   Suggested command:
+      python scripts/evaluation_manager.py extract-readme \
+        --repo-id "allenai/OLMo-7B" \
+        --table 3 \
+        --model-name-override "**OLMo 7B** (ours)" \
+        --dry-run
 ```
 
-**Dry Run (Preview Only):**
+**Step 2: Copy and run the suggested command** (with `--dry-run` to preview YAML):
 ```bash
 python scripts/evaluation_manager.py extract-readme \
-  --repo-id "username/model-name" \
+  --repo-id "allenai/OLMo-7B" \
+  --table 3 \
+  --model-name-override "**OLMo 7B** (ours)" \
   --dry-run
 ```
+
+**Step 3: Verify the YAML output** - check benchmark names and values match the README
+
+**Step 4: Apply changes** - remove `--dry-run` and optionally add `--create-pr`:
+```bash
+python scripts/evaluation_manager.py extract-readme \
+  --repo-id "allenai/OLMo-7B" \
+  --table 3 \
+  --model-name-override "**OLMo 7B** (ours)" \
+  --create-pr
+```
+
+#### Key Flags
+
+- `--table N`: **Required when multiple tables exist.** Specifies which table to extract (1-indexed, matches `inspect-tables` output)
+- `--model-name-override`: Column header text for comparison tables (e.g., `"**OLMo 7B** (ours)"`)
+- `--dry-run`: Preview YAML without making changes
+- `--create-pr`: Create a pull request instead of direct push
 
 #### Supported Table Formats
 
@@ -272,21 +328,35 @@ python scripts/run_eval_job.py \
 python scripts/evaluation_manager.py --help
 ```
 
+**Inspect Tables (start here):**
+```bash
+python scripts/evaluation_manager.py inspect-tables \
+  --repo-id "username/model-name"
+```
+Shows all tables in the README with:
+- Table format (simple, comparison, transposed)
+- Column headers with model match indicators
+- Sample rows from first column
+- **Ready-to-use `extract-readme` command** with correct `--table` and `--model-name-override`
+
+Run `inspect-tables --help` to see the full workflow.
+
 **Extract from README:**
 ```bash
 python scripts/evaluation_manager.py extract-readme \
   --repo-id "username/model-name" \
+  [--table N] \
+  [--model-name-override "Column Header"] \
   [--task-type "text-generation"] \
   [--dataset-name "Custom Benchmarks"] \
-  [--model-name-override "Model Name From Table"] \
   [--dry-run] \
   [--create-pr]
 ```
 
-The `--model-name-override` flag is useful when:
-- The model name in the table differs from the repo name
-- Working with transposed tables where models are listed with different formatting
-- The script cannot automatically match the model name
+Key flags:
+- `--table N`: Table number from `inspect-tables` output (required if multiple tables)
+- `--model-name-override`: Exact column header for comparison tables
+- `--dry-run`: Preview YAML output without applying
 
 **Import from Artificial Analysis:**
 ```bash
