@@ -2,7 +2,7 @@
 
 Hugging Face Skills are Agent Context Protocol (ACP) definitions for AI/ML tasks like dataset creation, model training, and evaluation. They are interoperable with all major coding agent tools like OpenAI Codex, Anthropic's Claude Code, Google DeepMind's Gemini CLI, and Cursor.
 
-## How do Skill's work?
+## How do Skills work?
 
 In practice, skills are self-contained folders that package instructions, scripts, and resources together for an AI agent to use on a specific use case. Each folder includes a `SKILL.md` file with YAML frontmatter (name and description) followed by the guidance your coding agent follows while the skill is active. 
 
@@ -30,7 +30,7 @@ Hugging Face skills are compatible with Claude Code, Codex, and Gemini CLI. With
 For example:  
 
 ```
-/plugin install hf-llm-trainer@huggingface-skills
+/plugin install model-trainer@huggingface-skills
 ```
 
 ### Codex
@@ -69,10 +69,10 @@ This repository contains a few skills to get you started. You can also contribut
 
 | Skill Folder            | Description                                                                                                                | Documentation                                          |
 |-------------------------|----------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------|
-| `hf_dataset_creator/`   | Prompts, templates, and scripts for creating structured training datasets.                                                 | [SKILL.md](hf_dataset_creator/SKILL.md)                |
-| `hf_model_evaluation/`  | Instructions plus utilities for orchestrating evaluation jobs, generating reports, and mapping metrics.                    | [SKILL.md](hf_model_evaluation/SKILL.md)               |
-| `hf-llm-trainer/`       | Comprehensive training skill with `SKILL.md` guidance, helper scripts (e.g., `train_sft_example.py`, `convert_to_gguf.py`, cost estimators). | [SKILL.md](hf-llm-trainer/SKILL.md)                    |
-| `hf-paper-publisher/`   | Tools for publishing and managing research papers on Hugging Face Hub. Index papers from arXiv, link papers to models/datasets, generate professional research articles from templates, and manage paper authorship. | [SKILL.md](hf-paper-publisher/SKILL.md)                |
+| `hf_dataset_creator/`   | Prompts, templates, and scripts for creating structured training datasets. | [SKILL.md](hf_dataset_creator/skills/hugging-face-dataset-creator/SKILL.md) |
+| `hf_model_evaluation/`  | Instructions plus utilities for orchestrating evaluation jobs, generating reports, and mapping metrics. | [SKILL.md](hf_model_evaluation/skills/hugging-face-evaluation-manager/SKILL.md) |
+| `hf-llm-trainer/`       | Comprehensive training skill with `SKILL.md` guidance, helper scripts (e.g., `train_sft_example.py`, `convert_to_gguf.py`, cost estimators). | [SKILL.md](hf-llm-trainer/skills/model-trainer/SKILL.md) |
+| `hf-paper-publisher/`   | Tools for publishing and managing research papers on Hugging Face Hub. Index papers from arXiv, link papers to models/datasets, generate professional research articles from templates, and manage paper authorship. | [SKILL.md](hf-paper-publisher/skills/hugging-face-paper-publisher/SKILL.md) |
 
 ### Using skills in your coding agent
 
